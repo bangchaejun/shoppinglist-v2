@@ -10,6 +10,9 @@ type ShoppingList = {
   title: string;
   budget: number;
   shopping_date: string | null;
+  status: string;
+  completed_at: string | null;
+  final_total: number;
   created_at: string;
 };
 
@@ -37,11 +40,13 @@ export default function ShoppingListDetailPage() {
   const router = useRouter();
   const params = useParams();
 
-  const listId = params.id as string;
+  const rawId = params.id;
+  const listId = Array.isArray(rawId) ? rawId[0] : rawId ?? "";
 
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
+  const [completing, setCompleting] = useState(false);
 
   const [list, setList] = useState<ShoppingList | null>(null);
   const [items, setItems] = useState<ShoppingItem[]>([]);
@@ -97,11 +102,41 @@ export default function ShoppingListDetailPage() {
     cursor: "pointer",
   };
 
+  const successButtonStyle = {
+    display: "inline-block",
+    padding: "10px 16px",
+    borderRadius: "10px",
+    background: "#16a34a",
+    color: "#ffffff",
+    textDecoration: "none",
+    fontWeight: "bold",
+    border: "none",
+    cursor: "pointer",
+  };
+
+  const dangerButtonStyle = {
+    display: "inline-block",
+    padding: "10px 16px",
+    borderRadius: "10px",
+    background: "#dc2626",
+    color: "#ffffff",
+    textDecoration: "none",
+    fontWeight: "bold",
+    border: "none",
+    cursor: "pointer",
+  };
+
   function formatCurrency(value: number) {
     return `₩${Number(value || 0).toLocaleString("ko-KR")}`;
   }
 
   async function loadData() {
+    if (!listId) {
+      setErrorMessage("리스트 ID가 없습니다.");
+      setLoading(false);
+      return;
+    }
+
     const { data: userData, error: userError } = await supabase.auth.getUser();
 
     if (userError || !userData.user) {
@@ -160,12 +195,35 @@ export default function ShoppingListDetailPage() {
       .reduce((sum, item) => sum + Number(item.total_price || 0), 0);
   }, [items]);
 
+  const purchasedTotal = useMemo(() => {
+    return items
+      .filter((item) => item.is_purchased)
+      .reduce((sum, item) => sum + Number(item.total_price || 0), 0);
+  }, [items]);
+
+  const cartItemCount = useMemo(() => {
+    return items.filter((item) => item.is_in_cart).length;
+  }, [items]);
+
+  const purchasedItemCount = useMemo(() => {
+    return items.filter((item) => item.is_purchased).length;
+  }, [items]);
+
   const remainingBudget = Number(list?.budget || 0) - currentCartTotal;
+  const isCompleted = list?.status === "completed";
+  const finalSpentAmount = isCompleted
+    ? Number(list?.final_total || 0)
+    : purchasedTotal;
 
   async function handleCreateItem(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setMessage("");
     setErrorMessage("");
+
+    if (isCompleted) {
+      setErrorMessage("종료된 리스트에는 항목을 추가할 수 없습니다.");
+      return;
+    }
 
     if (!itemName.trim()) {
       setErrorMessage("항목 이름을 입력해주세요.");
@@ -218,7 +276,7 @@ export default function ShoppingListDetailPage() {
       setPlannedQuantity("1");
       setAddedInStore(false);
       setMessage("쇼핑 항목이 추가되었습니다.");
-    } catch (error) {
+    } catch {
       setErrorMessage("항목 추가 중 오류가 발생했습니다.");
     } finally {
       setCreating(false);
@@ -242,6 +300,11 @@ export default function ShoppingListDetailPage() {
   async function handleAddToCart(item: ShoppingItem) {
     setMessage("");
     setErrorMessage("");
+
+    if (isCompleted) {
+      setErrorMessage("종료된 리스트는 수정할 수 없습니다.");
+      return;
+    }
 
     const currentEdit = itemEdits[item.id];
 
@@ -280,14 +343,22 @@ export default function ShoppingListDetailPage() {
         return;
       }
 
+      const updatedItem = data as ShoppingItem;
+
       setItems((prev) =>
-        prev.map((prevItem) =>
-          prevItem.id === item.id ? (data as ShoppingItem) : prevItem
-        )
+        prev.map((prevItem) => (prevItem.id === item.id ? updatedItem : prevItem))
       );
 
+      setItemEdits((prev) => ({
+        ...prev,
+        [item.id]: {
+          actual_quantity: String(updatedItem.actual_quantity),
+          unit_price: String(updatedItem.unit_price),
+        },
+      }));
+
       setMessage(`"${item.name}" 항목이 카트에 반영되었습니다.`);
-    } catch (error) {
+    } catch {
       setErrorMessage("카트 반영 중 오류가 발생했습니다.");
     } finally {
       setSavingItemId(null);
@@ -298,6 +369,11 @@ export default function ShoppingListDetailPage() {
     setMessage("");
     setErrorMessage("");
 
+    if (isCompleted) {
+      setErrorMessage("종료된 리스트는 수정할 수 없습니다.");
+      return;
+    }
+
     try {
       setSavingItemId(item.id);
 
@@ -305,6 +381,7 @@ export default function ShoppingListDetailPage() {
         .from("shopping_items")
         .update({
           is_in_cart: false,
+          is_purchased: false,
         })
         .eq("id", item.id)
         .select()
@@ -322,10 +399,183 @@ export default function ShoppingListDetailPage() {
       );
 
       setMessage(`"${item.name}" 항목을 카트에서 해제했습니다.`);
-    } catch (error) {
+    } catch {
       setErrorMessage("카트 해제 중 오류가 발생했습니다.");
     } finally {
       setSavingItemId(null);
+    }
+  }
+
+  async function handleMarkPurchased(item: ShoppingItem) {
+    setMessage("");
+    setErrorMessage("");
+
+    if (isCompleted) {
+      setErrorMessage("종료된 리스트는 수정할 수 없습니다.");
+      return;
+    }
+
+    if (!item.is_in_cart) {
+      setErrorMessage("먼저 카트에 반영한 뒤 구매완료 처리해주세요.");
+      return;
+    }
+
+    try {
+      setSavingItemId(item.id);
+
+      const { data, error } = await supabase
+        .from("shopping_items")
+        .update({
+          is_purchased: true,
+        })
+        .eq("id", item.id)
+        .select()
+        .single();
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setItems((prev) =>
+        prev.map((prevItem) =>
+          prevItem.id === item.id ? (data as ShoppingItem) : prevItem
+        )
+      );
+
+      setMessage(`"${item.name}" 항목을 구매완료 처리했습니다.`);
+    } catch {
+      setErrorMessage("구매완료 처리 중 오류가 발생했습니다.");
+    } finally {
+      setSavingItemId(null);
+    }
+  }
+
+  async function handleCancelPurchased(item: ShoppingItem) {
+    setMessage("");
+    setErrorMessage("");
+
+    if (isCompleted) {
+      setErrorMessage("종료된 리스트는 수정할 수 없습니다.");
+      return;
+    }
+
+    try {
+      setSavingItemId(item.id);
+
+      const { data, error } = await supabase
+        .from("shopping_items")
+        .update({
+          is_purchased: false,
+        })
+        .eq("id", item.id)
+        .select()
+        .single();
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setItems((prev) =>
+        prev.map((prevItem) =>
+          prevItem.id === item.id ? (data as ShoppingItem) : prevItem
+        )
+      );
+
+      setMessage(`"${item.name}" 항목의 구매완료 상태를 해제했습니다.`);
+    } catch {
+      setErrorMessage("구매완료 해제 중 오류가 발생했습니다.");
+    } finally {
+      setSavingItemId(null);
+    }
+  }
+
+  async function handleDeleteItem(item: ShoppingItem) {
+    setMessage("");
+    setErrorMessage("");
+
+    if (isCompleted) {
+      setErrorMessage("종료된 리스트는 항목을 삭제할 수 없습니다.");
+      return;
+    }
+
+    const confirmed = window.confirm(`"${item.name}" 항목을 삭제할까요?`);
+    if (!confirmed) return;
+
+    try {
+      setSavingItemId(item.id);
+
+      const { error } = await supabase
+        .from("shopping_items")
+        .delete()
+        .eq("id", item.id);
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setItems((prev) => prev.filter((prevItem) => prevItem.id !== item.id));
+      setItemEdits((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+
+      setMessage(`"${item.name}" 항목이 삭제되었습니다.`);
+    } catch {
+      setErrorMessage("항목 삭제 중 오류가 발생했습니다.");
+    } finally {
+      setSavingItemId(null);
+    }
+  }
+
+  async function handleCompleteShopping() {
+    setMessage("");
+    setErrorMessage("");
+
+    if (!list) {
+      setErrorMessage("리스트 정보를 찾을 수 없습니다.");
+      return;
+    }
+
+    if (isCompleted) {
+      setErrorMessage("이미 종료된 장보기입니다.");
+      return;
+    }
+
+    const purchasedItems = items.filter((item) => item.is_purchased);
+    const finalTotal = purchasedItems.reduce(
+      (sum, item) => sum + Number(item.total_price || 0),
+      0
+    );
+
+    try {
+      setCompleting(true);
+
+      const { data, error } = await supabase
+        .from("shopping_lists")
+        .update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          final_total: finalTotal,
+        })
+        .eq("id", list.id)
+        .select()
+        .single();
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setList(data as ShoppingList);
+      setMessage("장보기가 종료되었습니다.");
+    } catch {
+      setErrorMessage("장보기 종료 처리 중 오류가 발생했습니다.");
+    } finally {
+      setCompleting(false);
     }
   }
 
@@ -418,11 +668,75 @@ export default function ShoppingListDetailPage() {
           </div>
 
           <div style={cardStyle}>
-            <h2 style={{ marginTop: 0, marginBottom: "10px" }}>쇼핑 날짜</h2>
-            <p style={{ fontSize: "20px", fontWeight: "bold", margin: 0 }}>
-              {list.shopping_date || "미지정"}
+            <h2 style={{ marginTop: 0, marginBottom: "10px" }}>카트 항목 수</h2>
+            <p style={{ fontSize: "28px", fontWeight: "bold", margin: 0 }}>
+              {cartItemCount}개
             </p>
           </div>
+
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0, marginBottom: "10px" }}>구매완료 항목 수</h2>
+            <p style={{ fontSize: "28px", fontWeight: "bold", margin: 0 }}>
+              {purchasedItemCount}개
+            </p>
+          </div>
+
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0, marginBottom: "10px" }}>구매완료 금액</h2>
+            <p style={{ fontSize: "28px", fontWeight: "bold", margin: 0 }}>
+              {formatCurrency(purchasedTotal)}
+            </p>
+          </div>
+
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0, marginBottom: "10px" }}>장보기 상태</h2>
+            <p
+              style={{
+                fontSize: "24px",
+                fontWeight: "bold",
+                margin: 0,
+                color: isCompleted ? "#86efac" : "#ffffff",
+              }}
+            >
+              {isCompleted ? "종료됨" : "진행중"}
+            </p>
+          </div>
+
+          <div style={cardStyle}>
+            <h2 style={{ marginTop: 0, marginBottom: "10px" }}>최종 정산 금액</h2>
+            <p style={{ fontSize: "28px", fontWeight: "bold", margin: 0 }}>
+              {formatCurrency(finalSpentAmount)}
+            </p>
+          </div>
+        </div>
+
+        <div
+          style={{
+            ...cardStyle,
+            marginBottom: "24px",
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: "12px" }}>장보기 마무리</h2>
+          <p style={{ color: "#9ca3af", marginBottom: "16px" }}>
+            구매완료된 항목 기준으로 최종 금액을 저장하고 장보기를 종료합니다.
+          </p>
+
+          <button
+            type="button"
+            style={{
+              ...primaryButtonStyle,
+              background: isCompleted ? "#475569" : "#dc2626",
+              cursor: isCompleted ? "default" : "pointer",
+            }}
+            onClick={handleCompleteShopping}
+            disabled={isCompleted || completing}
+          >
+            {isCompleted
+              ? "장보기 종료 완료"
+              : completing
+              ? "종료 처리 중..."
+              : "장보기 종료"}
+          </button>
         </div>
 
         <div
@@ -444,6 +758,7 @@ export default function ShoppingListDetailPage() {
                 style={inputStyle}
                 value={itemName}
                 onChange={(e) => setItemName(e.target.value)}
+                disabled={isCompleted}
               />
             </div>
 
@@ -457,6 +772,7 @@ export default function ShoppingListDetailPage() {
                 style={inputStyle}
                 value={plannedQuantity}
                 onChange={(e) => setPlannedQuantity(e.target.value)}
+                disabled={isCompleted}
               />
             </div>
 
@@ -473,6 +789,7 @@ export default function ShoppingListDetailPage() {
                 type="checkbox"
                 checked={addedInStore}
                 onChange={(e) => setAddedInStore(e.target.checked)}
+                disabled={isCompleted}
               />
               마트에서 현장 추가한 항목
             </label>
@@ -485,8 +802,12 @@ export default function ShoppingListDetailPage() {
               <p style={{ color: "#fca5a5", marginBottom: "12px" }}>{errorMessage}</p>
             ) : null}
 
-            <button type="submit" style={primaryButtonStyle} disabled={creating}>
-              {creating ? "추가 중..." : "항목 추가"}
+            <button
+              type="submit"
+              style={primaryButtonStyle}
+              disabled={creating || isCompleted}
+            >
+              {isCompleted ? "종료된 리스트입니다" : creating ? "추가 중..." : "항목 추가"}
             </button>
           </form>
         </div>
@@ -549,12 +870,20 @@ export default function ShoppingListDetailPage() {
                           style={{
                             padding: "6px 12px",
                             borderRadius: "999px",
-                            background: item.is_in_cart ? "#16a34a" : "#2563eb",
+                            background: item.is_purchased
+                              ? "#16a34a"
+                              : item.is_in_cart
+                              ? "#2563eb"
+                              : "#475569",
                             fontSize: "13px",
                             fontWeight: "bold",
                           }}
                         >
-                          {item.is_in_cart ? "카트 담김" : "미담김"}
+                          {item.is_purchased
+                            ? "구매완료"
+                            : item.is_in_cart
+                            ? "카트 담김"
+                            : "미담김"}
                         </span>
                       </div>
                     </div>
@@ -581,6 +910,7 @@ export default function ShoppingListDetailPage() {
                           onChange={(e) =>
                             handleEditChange(item.id, "actual_quantity", e.target.value)
                           }
+                          disabled={isCompleted}
                         />
                       </div>
 
@@ -598,6 +928,7 @@ export default function ShoppingListDetailPage() {
                           onChange={(e) =>
                             handleEditChange(item.id, "unit_price", e.target.value)
                           }
+                          disabled={isCompleted}
                         />
                       </div>
 
@@ -627,25 +958,58 @@ export default function ShoppingListDetailPage() {
                         flexWrap: "wrap",
                       }}
                     >
-                      <button
-                        type="button"
-                        style={primaryButtonStyle}
-                        onClick={() => handleAddToCart(item)}
-                        disabled={savingItemId === item.id}
-                      >
-                        {savingItemId === item.id ? "반영 중..." : "카트 반영"}
-                      </button>
+                      {!item.is_in_cart ? (
+                        <button
+                          type="button"
+                          style={primaryButtonStyle}
+                          onClick={() => handleAddToCart(item)}
+                          disabled={savingItemId === item.id || isCompleted}
+                        >
+                          {savingItemId === item.id ? "반영 중..." : "카트 반영"}
+                        </button>
+                      ) : null}
+
+                      {item.is_in_cart && !item.is_purchased ? (
+                        <button
+                          type="button"
+                          style={successButtonStyle}
+                          onClick={() => handleMarkPurchased(item)}
+                          disabled={savingItemId === item.id || isCompleted}
+                        >
+                          {savingItemId === item.id ? "처리 중..." : "구매완료"}
+                        </button>
+                      ) : null}
+
+                      {item.is_purchased ? (
+                        <button
+                          type="button"
+                          style={secondaryButtonStyle}
+                          onClick={() => handleCancelPurchased(item)}
+                          disabled={savingItemId === item.id || isCompleted}
+                        >
+                          구매완료 해제
+                        </button>
+                      ) : null}
 
                       {item.is_in_cart ? (
                         <button
                           type="button"
                           style={secondaryButtonStyle}
                           onClick={() => handleRemoveFromCart(item)}
-                          disabled={savingItemId === item.id}
+                          disabled={savingItemId === item.id || isCompleted}
                         >
                           카트 해제
                         </button>
                       ) : null}
+
+                      <button
+                        type="button"
+                        style={dangerButtonStyle}
+                        onClick={() => handleDeleteItem(item)}
+                        disabled={savingItemId === item.id || isCompleted}
+                      >
+                        {savingItemId === item.id ? "처리 중..." : "항목 삭제"}
+                      </button>
                     </div>
                   </div>
                 );
