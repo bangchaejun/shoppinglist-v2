@@ -1,6 +1,20 @@
+"use client";
+
 import Link from "next/link";
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "../../utils/supabase/client";
 
 export default function LoginPage() {
+  const supabase = createClient();
+  const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+
   const inputStyle = {
     width: "100%",
     padding: "14px 16px",
@@ -31,6 +45,38 @@ export default function LoginPage() {
     cursor: "pointer",
   };
 
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setMessage("");
+    setErrorMessage("");
+
+    if (!email.trim() || !password.trim()) {
+      setErrorMessage("이메일과 비밀번호를 입력해주세요.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      setMessage("로그인 성공. 대시보드로 이동합니다.");
+      router.push("/dashboard");
+    } catch (error) {
+      setErrorMessage("로그인 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main
       style={{
@@ -58,17 +104,41 @@ export default function LoginPage() {
           이메일과 비밀번호를 입력해 로그인합니다.
         </p>
 
-        <div style={{ marginBottom: "18px" }}>
-          <label style={labelStyle}>이메일</label>
-          <input type="email" placeholder="example@email.com" style={inputStyle} />
-        </div>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: "18px" }}>
+            <label style={labelStyle}>이메일</label>
+            <input
+              type="email"
+              placeholder="example@email.com"
+              style={inputStyle}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
 
-        <div style={{ marginBottom: "20px" }}>
-          <label style={labelStyle}>비밀번호</label>
-          <input type="password" placeholder="비밀번호를 입력하세요" style={inputStyle} />
-        </div>
+          <div style={{ marginBottom: "20px" }}>
+            <label style={labelStyle}>비밀번호</label>
+            <input
+              type="password"
+              placeholder="비밀번호를 입력하세요"
+              style={inputStyle}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
 
-        <button style={buttonStyle}>로그인</button>
+          {message ? (
+            <p style={{ color: "#86efac", marginBottom: "16px" }}>{message}</p>
+          ) : null}
+
+          {errorMessage ? (
+            <p style={{ color: "#fca5a5", marginBottom: "16px" }}>{errorMessage}</p>
+          ) : null}
+
+          <button type="submit" style={buttonStyle} disabled={loading}>
+            {loading ? "로그인 처리중..." : "로그인"}
+          </button>
+        </form>
 
         <p style={{ marginTop: "20px", color: "#9ca3af", textAlign: "center" }}>
           아직 계정이 없으신가요?{" "}
